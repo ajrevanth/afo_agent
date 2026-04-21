@@ -1,58 +1,16 @@
+"""
+Pydantic request/response models for the FastAPI layer.
+SQLAlchemy ORM models live in helpers/schema.py.
+"""
+
 from datetime import datetime
-from enum import Enum
 from typing import Optional
-from pydantic import BaseModel
-from sqlalchemy import Column, String, DateTime, Text, Enum as SAEnum
-from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import DeclarativeBase
-import uuid
+from pydantic import BaseModel, model_validator, field_validator
+
+from helpers.schema import DocumentType, DocumentStatus
 
 
-class DocumentState(str, Enum):
-    received = "received"
-    processing = "processing"
-    classified = "classified"
-    extracted = "extracted"
-    pending_review = "pending_review"   # waiting for human
-    approved = "approved"               # human approved
-    rejected = "rejected"               # human rejected
-    completed = "completed"             # fully done
-    failed = "failed"                   # agent error
-    needs_attention = "needs_attention" # agent flagged, needs manual entry
-
-
-class DocumentType(str, Enum):
-    invoice = "invoice"
-    capital_call = "capital_call"
-    unknown = "unknown"
-
-
-class Base(DeclarativeBase):
-    pass
-
-
-class DocumentORM(Base):
-    __tablename__ = "documents"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    filename = Column(String, nullable=False)
-    sender_email = Column(String)
-    subject = Column(String)
-    state = Column(SAEnum(DocumentState), default=DocumentState.received, nullable=False)
-    document_type = Column(SAEnum(DocumentType))
-    metadata_ = Column("metadata", JSONB)
-    agent_reasoning = Column(Text)
-    state_history = Column(JSONB, default=list)  # list of StateTransition dicts
-    reviewed_by = Column(String)
-    reviewed_at = Column(DateTime)
-    review_note = Column(Text)
-    error_message = Column(Text)
-    file_path = Column(String)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-
-# ── Pydantic schemas ──────────────────────────────────────────────────────────
+# ── response schemas ──────────────────────────────────────────────────────────
 
 class ExtractedMetadata(BaseModel):
     fund_name: Optional[str] = None
@@ -72,12 +30,15 @@ class StateTransition(BaseModel):
 
 class DocumentOut(BaseModel):
     id: str
-    filename: str
-    sender_email: Optional[str] = None
-    subject: Optional[str] = None
-    state: DocumentState
-    document_type: Optional[DocumentType] = None
-    metadata: Optional[ExtractedMetadata] = None
+    email_id: Optional[str] = None
+    filename: Optional[str] = None
+    status: DocumentStatus
+    document_type: DocumentType
+    fund_name: Optional[str] = None
+    amount: Optional[float] = None
+    currency: Optional[str] = None
+    due_date: Optional[datetime] = None
+    extra_metadata: Optional[dict] = None
     agent_reasoning: Optional[str] = None
     state_history: Optional[list] = None
     reviewed_by: Optional[str] = None
@@ -86,20 +47,53 @@ class DocumentOut(BaseModel):
     error_message: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+    # Computed for frontend compatibility
+    state: Optional[str] = None
+    metadata: Optional[dict] = None
+
+    model_config = {"from_attributes": True}
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def coerce_metadata(cls, v):
+        """Discard SQLAlchemy's class-level MetaData() object — only accept dicts."""
+        return v if isinstance(v, dict) else None
+
+    @model_validator(mode="after")
+    def populate_computed(self):
+        self.state = self.status.value if self.status else None
+        if self.metadata is None:
+            md: dict = {}
+            if self.fund_name is not None:
+                md["fund_name"] = self.fund_name
+            if self.amount is not None:
+                md["amount"] = self.amount
+            if self.currency is not None:
+                md["currency"] = self.currency
+            if self.due_date is not None:
+                md["due_date"] = self.due_date.date().isoformat()
+            self.metadata = md if md else None
+        return self
+
+
+class EmailOut(BaseModel):
+    id: str
+    gmail_message_id: Optional[str] = None
+    sender_email: str
+    subject: Optional[str] = None
+    body: Optional[str] = None
+    attachments: list = []
+    agent_queued: bool = False
+    received_at: datetime
+    documents: list[DocumentOut] = []
 
     model_config = {"from_attributes": True}
 
 
-class MockEmailPayload(BaseModel):
-    sender: str
-    subject: str
-    body: str
-    attachment_name: str
-    attachment_type: str
-
+# ── request schemas ───────────────────────────────────────────────────────────
 
 class ReviewPayload(BaseModel):
-    action: str          # "approve" | "reject"
+    action: str              # "approve" | "reject"
     reviewer_name: str
     note: Optional[str] = None
     overrides: Optional[dict] = None
@@ -109,7 +103,7 @@ class DashboardStats(BaseModel):
     total: int
     by_state: dict
     by_type: dict
-    completed_today: int
+    approved: int
     failed_today: int
     pending_review_count: int
     urgent_count: int

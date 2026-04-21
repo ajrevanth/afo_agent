@@ -19,8 +19,13 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -e
             cd /opt/afo-agent
+
             git pull origin main
-            docker compose pull
-            docker compose up -d --build backend
+
+            # Build and start; --wait blocks until the backend healthcheck passes
+            docker compose up -d --build --wait backend
+
+            # Run migrations once the container is healthy
             docker compose exec -T backend alembic upgrade head

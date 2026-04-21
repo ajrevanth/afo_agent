@@ -1,0 +1,13 @@
+version: "3.9"
+
+# Local development overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  backend:
+    volumes:
+      - ./backend:/app        # live-reload host files into container
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: "no"
+    environment:
+      DATABASE_URL: postgresql://afo:afo@postgres:5432/afo

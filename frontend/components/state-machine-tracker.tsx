@@ -1,4 +1,4 @@
-import { cn, STATE_ORDER } from "@/lib/utils";
+import { cn, PIPELINE_STATES } from "@/lib/utils";
 import type { DocumentState } from "@/lib/types";
 import { Check, X } from "lucide-react";
 
@@ -8,13 +8,13 @@ interface Props {
 
 export function StateMachineTracker({ state }: Props) {
   const isFailed = state === "failed";
-  const currentIdx = STATE_ORDER.indexOf(state as typeof STATE_ORDER[number]);
+  const currentIdx = PIPELINE_STATES.indexOf(state);
 
   return (
     <div>
       <p className="mb-3 text-xs font-medium text-muted-foreground">Processing Pipeline</p>
       <div className="flex items-center gap-0">
-        {STATE_ORDER.map((s, i) => {
+        {PIPELINE_STATES.map((s, i) => {
           const isDone = currentIdx > i || state === "completed";
           const isCurrent = currentIdx === i && !isFailed;
           const isFailedStep = isFailed && currentIdx === i;
@@ -35,7 +35,7 @@ export function StateMachineTracker({ state }: Props) {
                 </div>
                 <span className="text-xs capitalize text-muted-foreground">{s}</span>
               </div>
-              {i < STATE_ORDER.length - 1 && (
+              {i < PIPELINE_STATES.length - 1 && (
                 <div
                   className={cn(
                     "mx-1 mb-4 h-0.5 w-8",

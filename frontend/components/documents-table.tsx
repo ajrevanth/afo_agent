@@ -97,7 +97,7 @@ export function DocumentsTable({ documents, loading, onRefresh }: Props) {
                       <td className="px-4 py-3 font-medium">{doc.filename}</td>
                       <td className="px-4 py-3 text-muted-foreground">{doc.sender_email ?? "—"}</td>
                       <td className="px-4 py-3">
-                        {doc.document_type ? <TypeBadge type={doc.document_type} /> : "—"}
+                        {doc.document_type && doc.document_type !== "unknown" ? <TypeBadge type={doc.document_type} /> : "—"}
                       </td>
                       <td className="px-4 py-3">
                         <StatusBadge state={doc.state} />

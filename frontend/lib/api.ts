@@ -2,7 +2,6 @@ import type {
   Document,
   DashboardStats,
   DocumentFilters,
-  MockEmailPayload,
   ReviewPayload,
 } from "./types";
 
@@ -43,24 +42,6 @@ export async function fetchPendingReview(): Promise<Document[]> {
 
 export async function fetchDocument(id: string): Promise<Document> {
   return request<Document>(`/api/documents/${id}`);
-}
-
-export async function uploadDocument(file: File): Promise<Document> {
-  const form = new FormData();
-  form.append("file", file);
-  const res = await fetch(`${BASE}/api/documents/upload`, {
-    method: "POST",
-    body: form,
-  });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
-}
-
-export async function triggerMockEmail(payload: MockEmailPayload): Promise<Document> {
-  return request<Document>("/api/documents/mock-email", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
 }
 
 export async function reviewDocument(id: string, payload: ReviewPayload): Promise<Document> {

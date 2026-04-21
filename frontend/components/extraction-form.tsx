@@ -144,18 +144,18 @@ export function ExtractionForm({ doc, readOnly, onUpdate }: Props) {
       </Card>
 
       {/* Settled state display */}
-      {(doc.state === "approved" || doc.state === "rejected") && (
+      {(doc.state === "approved" || doc.state === "completed" || doc.state === "rejected") && (
         <div className={cn(
           "flex items-start gap-3 rounded-md p-4 text-sm",
-          doc.state === "approved" ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"
+          (doc.state === "approved" || doc.state === "completed") ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"
         )}>
-          {doc.state === "approved"
+          {(doc.state === "approved" || doc.state === "completed")
             ? <CheckCircle className="mt-0.5 h-4 w-4 shrink-0" />
             : <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
           }
           <div>
             <p className="font-medium">
-              {doc.state === "approved" ? "Approved" : "Rejected"} by {doc.reviewed_by}
+              {(doc.state === "approved" || doc.state === "completed") ? "Approved" : "Rejected"} by {doc.reviewed_by}
             </p>
             {doc.review_note && <p className="mt-0.5 text-xs opacity-80">{doc.review_note}</p>}
           </div>

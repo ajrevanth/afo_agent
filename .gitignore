@@ -1,0 +1,10 @@
+/.venv/
+/frontend/node_modules/
+.env
+credentials.json
+token.json
+/backend/docs/
+/frontend/.next/
+__pycache__/
+/frontend/out/
+.env.*

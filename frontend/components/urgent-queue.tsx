@@ -71,7 +71,7 @@ export function UrgentQueue({ documents, loading, onRefresh }: Props) {
                 >
                   <div className="min-w-0 flex-1 space-y-1">
                     <div className="flex items-center gap-2">
-                      {doc.document_type && <TypeBadge type={doc.document_type} />}
+                      {doc.document_type && doc.document_type !== "unknown" && <TypeBadge type={doc.document_type} />}
                       {urgent && (
                         <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-bold text-red-700">
                           {days === 0 ? "DUE TODAY" : days === 1 ? "DUE TOMORROW" : days !== null && days < 0 ? "OVERDUE" : `${days}d left`}
