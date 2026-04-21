@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     )
     poll_interval_seconds: int = Field(default=60, alias="POLL_INTERVAL_SECONDS")
     agent_poll_interval_seconds: int = Field(default=10, alias="AGENT_POLL_INTERVAL_SECONDS")
+    cors_origins: str = Field(default="http://localhost:3000", alias="CORS_ORIGINS")
 
 
 @lru_cache

@@ -46,9 +46,11 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="AFO Agent API", version="2.0.0", lifespan=lifespan)
 
+_cors_origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
