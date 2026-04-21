@@ -9,6 +9,10 @@ import { Button } from "@/components/ui/button";
 import { ArrowLeft, RefreshCw } from "lucide-react";
 import Link from "next/link";
 
+export function generateStaticParams() {
+  return [];
+}
+
 export default function DocumentReviewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
