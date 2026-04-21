@@ -47,7 +47,7 @@ export function RecentDocuments({ documents, loading, onRefresh }: Props) {
               ) : documents.length === 0 ? (
                 <tr>
                   <td colSpan={6} className="py-8 text-center text-muted-foreground">
-                    No documents ingested yet. Use the Ingest tab to add one.
+                    No documents yet.
                   </td>
                 </tr>
               ) : (
@@ -55,7 +55,7 @@ export function RecentDocuments({ documents, loading, onRefresh }: Props) {
                   <tr key={doc.id} className="hover:bg-muted/40">
                     <td className="py-3 pr-4 font-medium">{doc.filename}</td>
                     <td className="py-3 pr-4">
-                      {doc.document_type ? <TypeBadge type={doc.document_type} /> : "—"}
+                      {doc.document_type && doc.document_type !== "unknown" ? <TypeBadge type={doc.document_type} /> : "—"}
                     </td>
                     <td className="py-3 pr-4">
                       <StatusBadge state={doc.state} />

@@ -6,7 +6,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge, TypeBadge } from "@/components/status-badge";
 import { formatDate, formatCurrency, isUrgent } from "@/lib/utils";
-import { RefreshCw, ArrowRight, AlertTriangle } from "lucide-react";
+import { documentFileUrl } from "@/lib/api";
+import { RefreshCw, ArrowRight, AlertTriangle, Download } from "lucide-react";
 import type { Document } from "@/lib/types";
 
 interface Props {
@@ -19,40 +20,51 @@ function DocumentRow({ doc }: { doc: Document }) {
   const urgent = doc.document_type === "capital_call" && isUrgent(doc.metadata?.due_date);
 
   return (
-    <Link
-      href={`/documents/${doc.id}`}
-      className={`flex items-center gap-4 border-b px-4 py-3 transition-colors last:border-0 hover:bg-muted/40 ${
-        urgent ? "bg-orange-50/60" : ""
-      }`}
-    >
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-center gap-2">
-          {doc.document_type && <TypeBadge type={doc.document_type} />}
-          {urgent && (
-            <span className="flex items-center gap-1 text-xs font-semibold text-red-600">
-              <AlertTriangle className="h-3 w-3" />
-              Urgent
-            </span>
-          )}
+    <div className={`flex items-center border-b last:border-0 ${urgent ? "bg-orange-50/60" : ""}`}>
+      <Link
+        href={`/documents/${doc.id}`}
+        className="flex flex-1 items-center gap-4 px-4 py-3 transition-colors hover:bg-muted/40"
+      >
+        <div className="min-w-0 flex-1 space-y-0.5">
+          <div className="flex items-center gap-2">
+            {doc.document_type && doc.document_type !== "unknown" && <TypeBadge type={doc.document_type} />}
+            {urgent && (
+              <span className="flex items-center gap-1 text-xs font-semibold text-red-600">
+                <AlertTriangle className="h-3 w-3" />
+                Urgent
+              </span>
+            )}
+          </div>
+          <p className="truncate text-sm font-medium">{doc.filename}</p>
+          <div className="flex gap-3 text-xs text-muted-foreground">
+            <span>{doc.sender_email ?? "Direct upload"}</span>
+            {doc.metadata?.fund_name && <span>· {doc.metadata.fund_name}</span>}
+            {doc.metadata?.amount && (
+              <span className="font-medium text-foreground">
+                · {formatCurrency(doc.metadata.amount, doc.metadata.currency)}
+              </span>
+            )}
+            {doc.metadata?.due_date && <span>· Due {doc.metadata.due_date}</span>}
+          </div>
         </div>
-        <p className="truncate text-sm font-medium">{doc.filename}</p>
-        <div className="flex gap-3 text-xs text-muted-foreground">
-          <span>{doc.sender_email ?? "Direct upload"}</span>
-          {doc.metadata?.fund_name && <span>· {doc.metadata.fund_name}</span>}
-          {doc.metadata?.amount && (
-            <span className="font-medium text-foreground">
-              · {formatCurrency(doc.metadata.amount, doc.metadata.currency)}
-            </span>
-          )}
-          {doc.metadata?.due_date && <span>· Due {doc.metadata.due_date}</span>}
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-xs text-muted-foreground">{formatDate(doc.updated_at)}</span>
+          <StatusBadge state={doc.state} />
+          <ArrowRight className="h-4 w-4 text-muted-foreground" />
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-3">
-        <span className="text-xs text-muted-foreground">{formatDate(doc.updated_at)}</span>
-        <StatusBadge state={doc.state} />
-        <ArrowRight className="h-4 w-4 text-muted-foreground" />
-      </div>
-    </Link>
+      </Link>
+      {doc.filename && (
+        <a
+          href={documentFileUrl(doc.id)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-3 py-3 text-muted-foreground transition-colors hover:text-foreground"
+          title="Download / open file"
+        >
+          <Download className="h-4 w-4" />
+        </a>
+      )}
+    </div>
   );
 }
 

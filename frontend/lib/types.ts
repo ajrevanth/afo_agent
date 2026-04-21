@@ -50,7 +50,7 @@ export interface DashboardStats {
   total: number;
   by_state: Record<string, number>;
   by_type: Record<DocumentType, number>;
-  completed_today: number;
+  approved: number;
   failed_today: number;
   pending_review_count: number;
   urgent_count: number; // due within 3 days
@@ -60,14 +60,6 @@ export interface DocumentFilters {
   state?: DocumentState;
   document_type?: DocumentType;
   search?: string;
-}
-
-export interface MockEmailPayload {
-  sender: string;
-  subject: string;
-  body: string;
-  attachment_name: string;
-  attachment_type: "invoice" | "capital_call";
 }
 
 export interface ReviewPayload {

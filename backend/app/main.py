@@ -1,12 +1,12 @@
 import asyncio
-import os
-import shutil
+import logging
 import uuid
-from datetime import datetime, date, timedelta
+from contextlib import asynccontextmanager
+from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, BackgroundTasks, Query
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -14,15 +14,37 @@ from sqlalchemy import func
 
 from app.database import get_db, init_db
 from app.models import (
-    DocumentORM, DocumentState, DocumentType,
-    DocumentOut, MockEmailPayload, ReviewPayload, DashboardStats, ExtractedMetadata,
+    DocumentOut, EmailOut, ReviewPayload, DashboardStats,
 )
-from app.agent import run_agent
+from app.agent import initialize_graph, resume_agent_run, shutdown_graph
+from app.gmail import get_oauth_url, exchange_code
+from app.email_worker import email_worker
+from app.agent_worker import agent_worker, _run_agent_for_doc, _push_history
+from app.settings import settings
+from helpers.schema import DocumentORM, DocumentStatus, DocumentType, EmailORM, GmailTokenORM
 
-UPLOAD_DIR = Path("/tmp/afo_uploads")
+UPLOAD_DIR = Path(__file__).resolve().parents[1] / "documents"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-app = FastAPI(title="AFO Agent API", version="1.0.0")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    await initialize_graph()
+    asyncio.create_task(email_worker.run())
+    asyncio.create_task(agent_worker.run())
+    yield
+    await shutdown_graph()
+
+
+app = FastAPI(title="AFO Agent API", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,19 +55,13 @@ app.add_middleware(
 )
 
 
-@app.on_event("startup")
-def startup():
-    init_db()
-
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def extract_text_from_file(path: Path, filename: str) -> str:
     if filename.endswith(".pdf"):
         try:
             from pypdf import PdfReader
-            reader = PdfReader(str(path))
-            return "\n".join(p.extract_text() or "" for p in reader.pages)
+            return "\n".join(p.extract_text() or "" for p in PdfReader(str(path)).pages)
         except Exception:
             return f"[PDF: {filename} — could not extract text]"
     if filename.endswith(".txt"):
@@ -53,151 +69,97 @@ def extract_text_from_file(path: Path, filename: str) -> str:
     return f"[Attachment: {filename}]"
 
 
-def push_history(doc: DocumentORM, from_state: str, to_state: str, actor: str, note: str | None = None):
-    history = list(doc.state_history or [])
-    history.append({
-        "from_state": from_state,
-        "to_state": to_state,
-        "actor": actor,
-        "timestamp": datetime.utcnow().isoformat(),
-        "note": note,
-    })
-    doc.state_history = history
-
-
-def is_urgent(due_date_str: str | None) -> bool:
-    if not due_date_str:
+def is_urgent(due_date: datetime | None) -> bool:
+    if not due_date:
         return False
-    try:
-        due = date.fromisoformat(due_date_str)
-        return (due - date.today()).days <= 3
-    except ValueError:
-        return False
+    return (due_date.date() - date.today()).days <= 3
 
 
-async def process_document(doc_id: str, file_path: Path, filename: str):
-    from app.database import SessionLocal
-    db = SessionLocal()
-    try:
-        doc = db.query(DocumentORM).filter(DocumentORM.id == doc_id).first()
-        if not doc:
-            return
-
-        prev = doc.state.value
-        doc.state = DocumentState.processing
-        doc.updated_at = datetime.utcnow()
-        push_history(doc, prev, "processing", "agent")
-        db.commit()
-
-        text = extract_text_from_file(file_path, filename)
-
-        if not text.strip() or text.startswith("["):
-            doc.state = DocumentState.needs_attention
-            doc.agent_reasoning = "Could not extract readable text from the attachment. Manual review required."
-            push_history(doc, "processing", "needs_attention", "agent", "No extractable text")
-            doc.updated_at = datetime.utcnow()
-            db.commit()
-            return
-
-        doc.state = DocumentState.classified
-        push_history(doc, "processing", "classified", "agent")
-        db.commit()
-
-        result = await run_agent(doc_id, text)
-
-        doc.document_type = DocumentType(result.get("document_type", "unknown"))
-        doc.agent_reasoning = result.get("reasoning", "")
-        doc.state = DocumentState.extracted
-        push_history(doc, "classified", "extracted", "agent")
-        db.commit()
-
-        if result.get("metadata"):
-            doc.metadata_ = result["metadata"]
-
-        doc.state = DocumentState.pending_review
-        push_history(doc, "extracted", "pending_review", "agent", "Awaiting human verification")
-        doc.updated_at = datetime.utcnow()
-        db.commit()
-
-    except Exception as e:
-        db.rollback()
-        doc = db.query(DocumentORM).filter(DocumentORM.id == doc_id).first()
-        if doc:
-            push_history(doc, doc.state.value, "failed", "agent", str(e))
-            doc.state = DocumentState.failed
-            doc.error_message = str(e)
-            doc.updated_at = datetime.utcnow()
-            db.commit()
-    finally:
-        db.close()
-
-
-# ── routes ────────────────────────────────────────────────────────────────────
+# ── stats ─────────────────────────────────────────────────────────────────────
 
 @app.get("/api/stats", response_model=DashboardStats)
 def get_stats(db: Session = Depends(get_db)):
-    total = db.query(func.count(DocumentORM.id)).scalar() or 0
+    KNOWN_TYPES = [DocumentType.invoice, DocumentType.capital_call]
 
-    by_state_rows = db.query(DocumentORM.state, func.count(DocumentORM.id)).group_by(DocumentORM.state).all()
-    by_state = {s.value: 0 for s in DocumentState}
-    for state, count in by_state_rows:
-        by_state[state.value] = count
+    total = db.query(func.count(DocumentORM.id)).filter(
+        DocumentORM.document_type.in_(KNOWN_TYPES)
+    ).scalar() or 0
 
-    by_type_rows = db.query(DocumentORM.document_type, func.count(DocumentORM.id)).group_by(DocumentORM.document_type).all()
+    by_status_rows = (
+        db.query(DocumentORM.status, func.count(DocumentORM.id))
+        .filter(DocumentORM.document_type.in_(KNOWN_TYPES))
+        .group_by(DocumentORM.status)
+        .all()
+    )
+    by_state = {s.value: 0 for s in DocumentStatus}
+    for status, count in by_status_rows:
+        by_state[status.value] = count
+
+    by_type_rows = (
+        db.query(DocumentORM.document_type, func.count(DocumentORM.id))
+        .filter(DocumentORM.document_type.in_(KNOWN_TYPES))
+        .group_by(DocumentORM.document_type)
+        .all()
+    )
     by_type = {t.value: 0 for t in DocumentType}
     for dtype, count in by_type_rows:
         if dtype:
             by_type[dtype.value] = count
 
     today = date.today()
-    completed_today = db.query(func.count(DocumentORM.id)).filter(
-        DocumentORM.state.in_([DocumentState.approved, DocumentState.completed]),
-        func.date(DocumentORM.updated_at) == today,
+    approved = db.query(func.count(DocumentORM.id)).filter(
+        DocumentORM.document_type.in_(KNOWN_TYPES),
+        DocumentORM.status.in_([DocumentStatus.approved, DocumentStatus.completed]),
     ).scalar() or 0
 
     failed_today = db.query(func.count(DocumentORM.id)).filter(
-        DocumentORM.state == DocumentState.failed,
+        DocumentORM.document_type.in_(KNOWN_TYPES),
+        DocumentORM.status == DocumentStatus.failed,
         func.date(DocumentORM.updated_at) == today,
     ).scalar() or 0
 
-    pending_review_count = by_state.get("pending_review", 0) + by_state.get("needs_attention", 0)
+    pending_review_count = (
+        by_state.get("pending_review", 0) + by_state.get("needs_attention", 0)
+    )
 
     urgent_docs = db.query(DocumentORM).filter(
-        DocumentORM.state == DocumentState.pending_review,
+        DocumentORM.status == DocumentStatus.pending_review,
         DocumentORM.document_type == DocumentType.capital_call,
     ).all()
-    urgent_count = sum(1 for d in urgent_docs if is_urgent(d.metadata_ and d.metadata_.get("due_date")))
+    urgent_count = sum(1 for d in urgent_docs if is_urgent(d.due_date))
 
     return DashboardStats(
         total=total,
         by_state=by_state,
         by_type=by_type,
-        completed_today=completed_today,
+        approved=approved,
         failed_today=failed_today,
         pending_review_count=pending_review_count,
         urgent_count=urgent_count,
     )
 
 
+# ── documents ─────────────────────────────────────────────────────────────────
+
 @app.get("/api/documents", response_model=list[DocumentOut])
 def list_documents(
+    status: Optional[str] = None,
     state: Optional[str] = None,
     document_type: Optional[str] = None,
     search: Optional[str] = None,
     limit: int = Query(default=200, le=500),
     db: Session = Depends(get_db),
 ):
-    q = db.query(DocumentORM)
-    if state:
-        q = q.filter(DocumentORM.state == state)
+    KNOWN_TYPES = [DocumentType.invoice, DocumentType.capital_call]
+    q = db.query(DocumentORM).filter(DocumentORM.document_type.in_(KNOWN_TYPES))
+    effective_status = state or status
+    if effective_status:
+        q = q.filter(DocumentORM.status == effective_status)
     if document_type:
         q = q.filter(DocumentORM.document_type == document_type)
     if search:
-        q = q.filter(
-            DocumentORM.filename.ilike(f"%{search}%") |
-            DocumentORM.sender_email.ilike(f"%{search}%")
-        )
-    return [_to_out(d) for d in q.order_by(DocumentORM.updated_at.desc()).limit(limit).all()]
+        q = q.filter(DocumentORM.filename.ilike(f"%{search}%"))
+    return q.order_by(DocumentORM.updated_at.desc()).limit(limit).all()
 
 
 @app.get("/api/documents/{doc_id}", response_model=DocumentOut)
@@ -205,7 +167,7 @@ def get_document(doc_id: str, db: Session = Depends(get_db)):
     doc = db.query(DocumentORM).filter(DocumentORM.id == doc_id).first()
     if not doc:
         raise HTTPException(404, "Not found")
-    return _to_out(doc)
+    return doc
 
 
 @app.get("/api/documents/{doc_id}/file")
@@ -216,58 +178,17 @@ def get_document_file(doc_id: str, db: Session = Depends(get_db)):
     path = Path(doc.file_path)
     if not path.exists():
         raise HTTPException(404, "File not on disk")
-    media = "application/pdf" if doc.filename.endswith(".pdf") else "image/png"
-    return FileResponse(str(path), media_type=media, filename=doc.filename)
-
-
-@app.post("/api/documents/upload", response_model=DocumentOut)
-async def upload_document(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-):
-    doc_id = str(uuid.uuid4())
-    dest = UPLOAD_DIR / f"{doc_id}_{file.filename}"
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    doc = DocumentORM(id=doc_id, filename=file.filename, file_path=str(dest), state_history=[])
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-
-    background_tasks.add_task(process_document, doc_id, dest, file.filename)
-    return _to_out(doc)
-
-
-@app.post("/api/documents/mock-email", response_model=DocumentOut)
-async def mock_email(
-    payload: MockEmailPayload,
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-):
-    doc_id = str(uuid.uuid4())
-    fake_path = UPLOAD_DIR / f"{doc_id}_{payload.attachment_name}.txt"
-    fake_path.write_text(f"Subject: {payload.subject}\n\n{payload.body}")
-
-    doc = DocumentORM(
-        id=doc_id,
-        filename=payload.attachment_name,
-        sender_email=payload.sender,
-        subject=payload.subject,
-        file_path=str(fake_path),
-        state_history=[],
+    media = "application/pdf" if (doc.filename or "").endswith(".pdf") else "image/png"
+    return FileResponse(
+        str(path),
+        media_type=media,
+        filename=doc.filename,
+        headers={"Content-Disposition": f"inline; filename={doc.filename}"},
     )
-    db.add(doc)
-    db.commit()
-    db.refresh(doc)
-
-    background_tasks.add_task(process_document, doc_id, fake_path, payload.attachment_name)
-    return _to_out(doc)
 
 
 @app.post("/api/documents/{doc_id}/review", response_model=DocumentOut)
-def review_document(
+async def review_document(
     doc_id: str,
     payload: ReviewPayload,
     db: Session = Depends(get_db),
@@ -275,25 +196,51 @@ def review_document(
     doc = db.query(DocumentORM).filter(DocumentORM.id == doc_id).first()
     if not doc:
         raise HTTPException(404, "Not found")
-    if doc.state not in (DocumentState.pending_review, DocumentState.needs_attention):
-        raise HTTPException(400, f"Document is in state '{doc.state.value}', not reviewable")
+    if doc.status not in (DocumentStatus.pending_review, DocumentStatus.needs_attention):
+        raise HTTPException(400, f"Document is in status '{doc.status.value}', not reviewable")
 
-    new_state = DocumentState.approved if payload.action == "approve" else DocumentState.rejected
+    new_status = DocumentStatus.approved if payload.action == "approve" else DocumentStatus.rejected
 
     if payload.action == "approve" and payload.overrides:
-        existing = dict(doc.metadata_ or {})
-        existing.update({k: v for k, v in payload.overrides.items() if v is not None})
-        doc.metadata_ = existing
+        overrides = payload.overrides
+        if overrides.get("fund_name"):
+            doc.fund_name = overrides["fund_name"]
+        if overrides.get("amount") is not None:
+            doc.amount = overrides["amount"]
+        if overrides.get("currency"):
+            doc.currency = overrides["currency"]
+        if overrides.get("due_date"):
+            try:
+                doc.due_date = datetime.fromisoformat(overrides["due_date"])
+            except ValueError:
+                pass
 
-    push_history(doc, doc.state.value, new_state.value, payload.reviewer_name, payload.note)
-    doc.state = new_state
+    _push_history(doc, doc.status.value, new_status.value, payload.reviewer_name, payload.note)
+    doc.status = new_status
     doc.reviewed_by = payload.reviewer_name
     doc.reviewed_at = datetime.utcnow()
     doc.review_note = payload.note
     doc.updated_at = datetime.utcnow()
     db.commit()
+
+    # Resume LangGraph so the checkpoint reflects the final human decision
+    agent_result = await resume_agent_run(
+        document_id=doc_id,
+        human_decision=payload.action,
+        note=payload.note or "",
+        overrides=payload.overrides or {},
+    )
+
+    # After graph runs apply_review_node → END, transition approved → completed
+    if payload.action == "approve" and not agent_result.get("error"):
+        db.refresh(doc)
+        _push_history(doc, "approved", "completed", "system", "Processing complete")
+        doc.status = DocumentStatus.completed
+        doc.updated_at = datetime.utcnow()
+        db.commit()
+
     db.refresh(doc)
-    return _to_out(doc)
+    return doc
 
 
 @app.post("/api/documents/{doc_id}/retry", response_model=DocumentOut)
@@ -305,37 +252,85 @@ async def retry_document(
     doc = db.query(DocumentORM).filter(DocumentORM.id == doc_id).first()
     if not doc:
         raise HTTPException(404, "Not found")
-    if doc.state not in (DocumentState.failed, DocumentState.needs_attention):
+    if doc.status not in (DocumentStatus.failed, DocumentStatus.needs_attention):
         raise HTTPException(400, "Only failed or needs_attention documents can be retried")
 
-    push_history(doc, doc.state.value, "received", "system", "Manual retry triggered")
-    doc.state = DocumentState.received
+    _push_history(doc, doc.status.value, "processing", "system", "Manual retry")
+    doc.status = DocumentStatus.processing
     doc.error_message = None
     doc.updated_at = datetime.utcnow()
     db.commit()
 
-    background_tasks.add_task(process_document, doc_id, Path(doc.file_path), doc.filename)
-    return _to_out(doc)
+    text = extract_text_from_file(Path(doc.file_path), doc.filename) if doc.file_path else ""
+    background_tasks.add_task(_run_agent_for_doc, doc_id, text, doc.email_id)
+    return doc
 
 
-# ── serialization ─────────────────────────────────────────────────────────────
+# ── emails ────────────────────────────────────────────────────────────────────
 
-def _to_out(doc: DocumentORM) -> DocumentOut:
-    metadata = ExtractedMetadata(**doc.metadata_) if doc.metadata_ else None
-    return DocumentOut(
-        id=doc.id,
-        filename=doc.filename,
-        sender_email=doc.sender_email,
-        subject=doc.subject,
-        state=doc.state,
-        document_type=doc.document_type,
-        metadata=metadata,
-        agent_reasoning=doc.agent_reasoning,
-        state_history=doc.state_history or [],
-        reviewed_by=doc.reviewed_by,
-        reviewed_at=doc.reviewed_at,
-        review_note=doc.review_note,
-        error_message=doc.error_message,
-        created_at=doc.created_at or datetime.utcnow(),
-        updated_at=doc.updated_at or datetime.utcnow(),
+@app.get("/api/emails", response_model=list[EmailOut])
+def list_emails(
+    limit: int = Query(default=100, le=500),
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(EmailORM)
+        .order_by(EmailORM.received_at.desc())
+        .limit(limit)
+        .all()
     )
+
+
+@app.get("/api/emails/{email_id}", response_model=EmailOut)
+def get_email(email_id: str, db: Session = Depends(get_db)):
+    email = db.query(EmailORM).filter(EmailORM.id == email_id).first()
+    if not email:
+        raise HTTPException(404, "Not found")
+    return email
+
+
+# ── Gmail OAuth ───────────────────────────────────────────────────────────────
+
+@app.get("/api/gmail/auth")
+def gmail_auth(redirect_uri: Optional[str] = None):
+    return {"auth_url": get_oauth_url(redirect_uri or settings.gmail_redirect_uri)}
+
+
+@app.get("/api/gmail/callback")
+def gmail_callback(code: str, db: Session = Depends(get_db)):
+    try:
+        tokens = exchange_code(
+            code=code,
+            redirect_uri=settings.gmail_redirect_uri,
+        )
+        existing = db.query(GmailTokenORM).filter(
+            GmailTokenORM.account_email == tokens["email"]
+        ).first()
+        if existing:
+            existing.access_token = tokens["access_token"]
+            existing.refresh_token = tokens["refresh_token"]
+            existing.token_expiry = tokens["expiry"]
+            existing.updated_at = datetime.utcnow()
+        else:
+            db.add(GmailTokenORM(
+                account_email=tokens["email"],
+                access_token=tokens["access_token"],
+                refresh_token=tokens["refresh_token"],
+                token_expiry=tokens["expiry"],
+            ))
+        db.commit()
+        return {"success": True, "email": tokens["email"]}
+    except Exception as e:
+        raise HTTPException(400, f"OAuth exchange failed: {e}")
+
+
+@app.get("/api/gmail/status")
+def gmail_status(db: Session = Depends(get_db)):
+    token = db.query(GmailTokenORM).first()
+    if not token:
+        return {"connected": False}
+    return {
+        "connected": True,
+        "email": token.account_email,
+        "last_poll": token.last_poll_at.isoformat() if token.last_poll_at else None,
+    }

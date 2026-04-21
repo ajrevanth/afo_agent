@@ -1,11 +1,9 @@
-import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.models import Base
+from helpers.schema import Base  # single source of truth for all tables
+from app.settings import settings
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://afo:afo@localhost:5432/afo")
-
-engine = create_engine(DATABASE_URL)
+engine = create_engine(settings.database_url)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

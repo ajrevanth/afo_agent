@@ -2,13 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { LayoutDashboard, Inbox, Upload, Zap } from "lucide-react";
+import { LayoutDashboard, Inbox, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const nav = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard, desc: "Overview & urgent queue" },
   { href: "/documents", label: "Document Inbox", icon: Inbox, desc: "Review & approve" },
-  { href: "/upload", label: "Ingest", icon: Upload, desc: "Upload or simulate email" },
 ];
 
 export function Sidebar() {

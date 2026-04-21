@@ -29,8 +29,8 @@ export function StatsCards({ stats, loading }: Props) {
       highlight: (stats?.pending_review_count ?? 0) > 0,
     },
     {
-      title: "Approved Today",
-      value: stats?.completed_today ?? 0,
+      title: "Approved",
+      value: stats?.approved ?? 0,
       icon: CheckCircle,
       color: "text-green-600",
       bg: "bg-green-50",

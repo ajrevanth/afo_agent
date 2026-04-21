@@ -22,7 +22,7 @@ export function AgentReasoning({ doc }: Props) {
             <>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Classified as:</span>
-                <TypeBadge type={doc.document_type} />
+                {doc.document_type && doc.document_type !== "unknown" && <TypeBadge type={doc.document_type} />}
               </div>
               {doc.metadata?.confidence !== undefined && (
                 <div className="flex items-center gap-2">

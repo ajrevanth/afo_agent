@@ -33,10 +33,10 @@ export function ReviewScreen({ doc, onUpdate }: Props) {
 
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <StatusBadge state={doc.state} />
-        {doc.document_type && <TypeBadge type={doc.document_type} />}
+        {doc.document_type && doc.document_type !== "unknown" && <TypeBadge type={doc.document_type} />}
         {isSettled && doc.reviewed_by && (
           <span className="ml-2">
-            {doc.state === "approved" ? "Approved" : "Rejected"} by{" "}
+            {(doc.state === "approved" || doc.state === "completed") ? "Approved" : "Rejected"} by{" "}
             <strong>{doc.reviewed_by}</strong>
             {doc.reviewed_at && ` · ${new Date(doc.reviewed_at).toLocaleString()}`}
           </span>
